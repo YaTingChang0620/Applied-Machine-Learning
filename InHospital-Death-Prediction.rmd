@@ -1,7 +1,5 @@
----
-title: "ICU Patient In-hospital Death Prediction"
-output: html_document
----
+## "ICU Patient In-hospital Death Prediction"
+
 
 #### OBJECTIVES
 1. Predict in-hospital death among patients admitted to the ICU  
