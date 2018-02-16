@@ -1,7 +1,7 @@
 #### Applied-Machine-Learning
 Course: CMU 95-845 Machine Learning Pipeline (Spring 2018)  
 Professor: Jeremy C. Weiss  
-#### Topic: 
+Topic: 
 * data wrangling and visualization  
 * logistic regression
 * Bayesian networks  
