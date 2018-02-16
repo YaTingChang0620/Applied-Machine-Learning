@@ -1,193 +1,49 @@
 ---
-output:
-  html_document: default
-  pdf_document: default
-  Author: Ya Ting Chang
+title: "ICU Patient In-hospital Death Prediction"
+output: html_document
 ---
-Homework 1
-=====
 
-## (1) Your own decision tree [4]
-In this problem, the variable `tree` represents a custom decision tree which returns odds for leaf nodes. For non-leaf nodes, they are split by `splitVarable`. 
+#### OBJECTIVES
+1. Predict in-hospital death among patients admitted to the ICU  
+2. Deploy interpretable machine learning algorithms: LR and decision trees  
+3. Conduct association analysis and predictive analysis  
 
-a. Debug the functions to make the code work. Fix the function `predictedOdds` so that `predictedOddsOnDataSet` outputs the odds for each patient in data. Use the debugger functions like ```debugOnce(predictedOdds)``` or ```browser()``` to inspect the code. Which part of the code did you modify?  
+#### Features:   
+* Outcome: hospital expire flag  
+* Features to consider:  
+    * age at death  
+    * gender  
+    * ethnicity   
+    * type of insurance   
+    * source of admission   
+    * type of admission  
+    * the number of ICU admissions   
+    * age at icu admission   
+    * the number of hospital admissions  
+    * the number of assigned icd9 codes  
 
-Change the code splitvariable, trueChild, falseChild into character with double quote. 
-```{r,warning=FALSE,message=FALSE,echo=FALSE}
-### Load helper packages ###
+```{R,warning=FALSE,message=FALSE}
+# load required package
 loadlibs = function(libs) {
   for(lib in libs) {
     class(lib)
     if(!do.call(require,as.list(lib))) {install.packages(lib)}
-    # second argument of require() must be a list 
     do.call(require,as.list(lib))
   }
 }
-
-libs = c("tidyr","magrittr","purrr","dplyr","stringr","readr","data.table", "lubridate","ggplot2","modelr","rpart","broom","plotROC","rpart.plot","knitr")
+libs = c("tidyr","magrittr","purrr","dplyr","stringr","readr","data.table", "lubridate","ggplot2","modelr","rpart","ROCR","rpart.plot","knitr","broom","kableExtra")
+mycol <- c('#8dd3c7','#ffffb3','#bebada','#fb8072','#80b1d3','#fdb462','#b3de69','#fccde5','#d9d9d9','#bc80bd')
 
 loadlibs(libs)
 
-#--- synthetic depression data
-depressionData = data.frame( # do not change "depressionData"
-  pregnant = c(1,0,1,1),
-  depressed = c("yes","yes","no","no") %>% as.factor(),
-  hospitalized = c(1, 0, 0, 0) %>% as.logical()
-) %>% tbl_df()
-
-#--- tree: a model that outputs the odds of hospitalization from inputs of data (datums)
-tree = data.frame( # do not change "tree"
-  splitVariable = c("depressed", "pregnant", NA, NA, NA),
-  split = c("yes", 1, NA, NA, NA),
-  trueChild = c(2, 4, NA, NA, NA),
-  falseChild = c(3, 5, NA, NA, NA),
-  odds = c(NA, NA, 0.1, 2, 3)
-)
-```
-
-```{R,warning=FALSE,message=FALSE}
-predictOddsOnDataSet = function(tree, data, active = 1) {
-  apply(data, 1, (function(x) {predictedOdds(tree=tree, x, active=1)})  )
-}
-
-predictedOdds = function(tree, datum, active = 1) {
-  
-  if(is.na(tree[active,"splitVariable"])) { 
-    
-    return(tree$odds[active])
-    
-  } else {                                  
-    
-    if( (datum[[tree[active,"splitVariable"] %>% as.character]] %>% as.character) ==
-tree[active,"split"])
-      return(predictedOdds(tree, datum, active = tree[active,"trueChild"]))
-    
-    else
-      return(predictedOdds(tree, datum, active = tree[active,"falseChild"]))
-  }
-}
-predictOddsOnDataSet(tree, depressionData) 
-
-```
-
-
-b. Add two columns, `odds` and `probability`, in `depressionData` that give you the predicted odds and probabilities of hospitalization. Print the result.
-```{r,warning=FALSE,message=FALSE}
-depressionData <- depressionData %>%
-  mutate(odds=predictOddsOnDataSet(tree,depressionData),
-         probability= round(odds/(1+odds),2))
-# Print 
-depressionData
-```
-c. Using a threshold probability of 0.5, what is:
-  
-- the accuracy of the model? 0.75
-```{r,warning=FALSE,message=FALSE}
-depressionData <- depressionData %>%
-  mutate(pred_hospital=ifelse(probability>0.5,TRUE,FALSE) %>% as.factor())
-# calculate the confusion matrix
-confMat <- table(depressionData$pred_hospital,depressionData$hospitalized)
-# accuracy
-sum(diag(confMat))/sum(confMat)
-```
-
-- the sensitivity of the model? 1
-```{r,warning=FALSE,message=FALSE}
-# sensitivity = true positive rate(recall)
-confMat['TRUE','TRUE']/(confMat['TRUE','TRUE']+confMat['FALSE','TRUE'])
-```
-
-- the specificity of the model? 0.67
-```{r,warning=FALSE,message=FALSE}
-# sensitivity = true negative rate
-confMat['FALSE','FALSE']/(confMat['FALSE','FALSE']+confMat['TRUE','FALSE'])
-```
-
-- the precision of the model? 0.5
-```{r,warning=FALSE,message=FALSE}
-# precistion = positive predictive value
-confMat['TRUE','TRUE']/(confMat['TRUE','TRUE']+confMat['TRUE','FALSE'])
-```
-
-- the recall of the model? 1
-```{r,warning=FALSE,message=FALSE}
-# recall = TP rate
-confMat['TRUE','TRUE']/(confMat['TRUE','TRUE']+confMat['FALSE','TRUE'])
-```
-
-
-d. Write a function modifyTree() that takes a tree and an indicated leaf node (index of the row) and returns a tree with a new split on "hospitalized" with two new leaf nodes.
-```{r,warning=FALSE,message=FALSE}
-modifyTree <- function(tree, index){
-    if(!is.na(tree[index,'splitVariable'])){
-        stop(paste0("Index ", index, " is not a leaf node"))
-    }else{
-        # convert to character for modifying tree
-        tree[, 'splitVariable'] <- as.character(tree[, 'splitVariable'])
-        tree[, 'split'] <- as.character(tree[, 'split']) 
-        
-        
-        parentOdds <- tree[index, 'odds']
-        
-        # split the index node in the tree by 'hospitalized'
-        tree[index, 'splitVariable'] <- 'hospitalized'
-        tree[index, 'split'] <- T
-        
-        # specify the no. of newly added nodes in trueChild, falseChild
-        currentMaxNodeNumber <- max(c(tree$trueChild, tree$falseChild), na.rm=T)
-        tree[index, 'trueChild'] <- currentMaxNodeNumber + 1
-        tree[index, 'falseChild'] <- currentMaxNodeNumber + 2
-        tree[index, 'odds'] <- NA
-        
-        # add two new leaf nodes
-        leafNode <- data.frame(splitVariable=NA, split=NA, trueChild=NA, falseChild=NA, odds=parentOdds)
-        node1 <- leafNode
-        node2 <- leafNode
-        
-        # add into tree
-        tree <- rbind(tree, node1)
-        tree <- rbind(tree, node2)
-        
-        # convert to factor after adding new nodes
-        tree[,'splitVariable'] <- as.factor(tree[,'splitVariable'])
-        tree[,'split'] <- as.factor(tree[,'split'])
-        
-        return(tree)
-    }
-}
-
-```
-
-## (2) MLE and MAP [1]
-Suppose you want to know the prevalence of diabetes in Pittsburgh. If you randomly survey 10 Pittsburghers and 5 of them state they have diabetes:
-  
-- What is the maximum likelihood estimate for the prevalence of diabetes?
-Assuming the prevalence is normally distributed, the mean could be estimated to be 0.5, and the standard deviation could be 0.53 using maximum likelihood.
-
-
-## (3) Applying logistic regression for association and prediction [10]
-
-* Outcome: hospital expire flag (hospital_expire_flg)
-* Features to consider for use:
-    * age at death
-    * gender
-    * ethnicity (ethnicity_descr)
-    * type of insurance (overall_payor_group_descr)
-    * source of admission (admission_source_descr)
-    * type of admission (admission_type_descr)
-    * the number of ICU admissions (icustay_total_num)
-    * age at icu admission (icu_admit_age)
-    * the number of hospital admissions
-    * the number of assigned icd9 codes
-
-
-a. Do descriptives. Summarize each feature and outcome.
-```{R,warning=FALSE,message=FALSE}
+# read three files
 demographic <- read_csv("demographic_detail.csv")
 icd9 <- read_csv("icd9.csv")
 icu.stay <- read_csv("icustay_detail.csv")
-mycol <- c('#8dd3c7','#ffffb3','#bebada','#fb8072','#80b1d3','#fdb462','#b3de69','#fccde5','#d9d9d9','#bc80bd')
+```
 
+#### Data Preprocessing 
+```{R,warning=FALSE,message=FALSE}
 # create new column:age
 icu.stay.select <- icu.stay %>% 
   mutate(icustay_admit_age = round(icustay_admit_age,0),
@@ -225,26 +81,24 @@ for(i in c(3:6,12,13)){
 
 # Other cleanning:
 # 1. if age is NA, attach the overall median
-uniqueid$age[is.na(uniqueid$age)] <- median(uniqueid$age,na.rm=T)
-# 2. if no number_code , then set to 0
-uniqueid$number_code[is.na(uniqueid$number_code)] <- 0
+# 2. if there is no number_code , then set to 0
 # 3. remove observations without label(hospital_expire_flg)
+# 4. remove NA gender
+# 5. remove categories with few observations 
+uniqueid$age[is.na(uniqueid$age)] <- median(uniqueid$age,na.rm=T)
+uniqueid$number_code[is.na(uniqueid$number_code)] <- 0
 uniqueid = uniqueid %>%
   filter(!is.na(hospital_expire_flg))
-# 4. remove NA gender
 uniqueid = uniqueid %>%
     filter(!is.na(gender))
-# 5. remove categories with few observations 
 uniqueid = uniqueid %>%
     filter(!admission_source_descr %in% c("** INFO NOT AVAILABLE **","HMO REFERRAL/SICK"))
-
 ```
 
-Data Visualization    
-1. age  
-Among patient admitted to ICU, children (or newborn) are more likely to die.
-```{r,warning=FALSE,message=FALSE}
-# age
+#### Descriptive Summary
+* Age  
+Among patient admitted to ICU, death rate of newborn is 100%
+```{R,warning=FALSE,message=FALSE}
 uniqueid$age_bin <- cut_interval(uniqueid$age, n = 8)
 uniqueid %>% 
     group_by(age_bin) %>% 
@@ -255,41 +109,10 @@ uniqueid %>%
     geom_bar(stat='identity') +
     scale_fill_manual(values=mycol) +
     guides(fill=guide_legend(title="Age"))+
-    ggtitle("Death rate in hospital among different ages")
-
-```
-2. Gender  
-There is no much difference in death rate between male and female.  
-```{r,warning=FALSE,message=FALSE}
-# gender
-uniqueid %>%
-  filter(!is.na(gender)) %>%
-  ggplot() + 
-  geom_bar(aes(x=gender,fill=hospital_expire_flg),position='fill') +
-  guides(fill=guide_legend(title="Expire"))+
-  scale_fill_manual(values=mycol[4:5]) 
-
+    ggtitle("Death rate among different ages")
 ```
 
-3. Ethnicity  
-There is no much difference in death rate among different races.  
-```{r,warning=FALSE,message=FALSE}
-# ethnicity (v)
-
-f <- c('AMERICAN INDIAN/ALASKA NATIVE','ASIAN - CHINESE','BLACK/CAPE VERDEAN','MULTI RACE ETHNICITY','UNABLE TO OBTAIN')
-
-uniqueid %>%
-  filter(!is.na(ethnicity_descr) &&
-           !ethnicity_descr %in% f) %>%
-  ggplot()+
-  geom_bar(aes(x=ethnicity_descr,fill=hospital_expire_flg),position='fill') +
-  coord_flip() + 
-  scale_fill_manual(values=c(mycol[4],mycol[5]))+
-  guides(fill=guide_legend(title="Expire"))+
-  labs(x="Ethnicity")
-```
-
-4. type of insurance  
+* type of insurance  
 Self-pay patients have the highest death rate.
 ```{r,warning=FALSE,message=FALSE}
 uniqueid %>%
@@ -303,46 +126,11 @@ uniqueid %>%
   guides(fill=guide_legend(title="Insurance Type"))+
   scale_fill_manual(values=mycol)+
   labs(x='Type of Insurance')
-
 ```
 
-5. Admission source  
-Patient transferred from hospital and admitted by emergency room have higher proportion of death
+* Number of ICU Admission   
+Few patients have more than four times ICU admission.The more ICU stay, the higer in-hospital death rate.  
 ```{r,warning=FALSE,message=FALSE}
-# admission_source_descr
-f <- c('** INFO NOT AVAILABLE **','HMO REFERRAL/SICK','TRANSFER FROM OTHER HEALT')
-uniqueid %>%
-  filter(!is.na(admission_source_descr) &
-           !admission_source_descr %in% f) %>%
-  ggplot()+
-  geom_bar(aes(x=admission_source_descr,fill=hospital_expire_flg),position='fill')+
-  coord_flip() + 
-  guides(fill=guide_legend(title="Expire"))+
-  scale_fill_manual(values=c(mycol[4],mycol[5]))+
-  labs(x="Admission Source")
-```
-
-6. Admission Type  
-Newborn have the highest rate of expiring in hospital(but their total amount is also small).  
-```{r,warning=FALSE,message=FALSE}
-# type of admission
-uniqueid %>% 
-    group_by(admission_type_descr) %>% 
-    summarize(Y.ratio = sum(as.numeric(hospital_expire_flg)-1)/length(hospital_expire_flg),
-              N = length(hospital_expire_flg)) %>%
-    ggplot(aes(x=admission_type_descr, y=Y.ratio, fill=admission_type_descr)) +
-    geom_text(aes(label = N, y = Y.ratio + 0.05),position = position_dodge(0.9), vjust = 0)+
-    geom_bar(stat='identity') +
-    guides(fill=guide_legend(title="Type"))+
-    scale_fill_manual(values=mycol[4:8])+
-  labs(x="Admission Type")
-  
-```
-
-7. Number of ICU Admission   
-Few patients have more than four times ICU admission.The more ICU stay, the higer in-hospital rate.  
-```{r,warning=FALSE,message=FALSE}
-# icustay_total_num
 uniqueid %>% 
   filter(icustay_total_num < 4) %>%
     group_by(icustay_total_num) %>% 
@@ -356,20 +144,7 @@ uniqueid %>%
   labs(x="Number of ICU Stays")
 ```
 
-8. Age at ICU Admission   
-For patient with different ages, the density distribution of death/live is different.   
-```{r,warning=FALSE,message=FALSE}
-# age at icu admission
-uniqueid %>%
-  filter(!is.na(icustay_admit_age)) %>%
-  ggplot()+
-  geom_density(aes(x=icustay_admit_age,color=hospital_expire_flg,fill=hospital_expire_flg),alpha=0.55) +
-  scale_fill_manual(values=mycol[4:5])+
-  labs(x="Age at ICU Admission")
-
-```
-
-9. Number of Hospital Admission    
+* Number of Hospital Admission    
 Patients admitted by hospital once have the highest rate of death.  
 ```{r,warning=FALSE,message=FALSE}
 # number of hospital admission
@@ -387,48 +162,74 @@ uniqueid %>%
   labs(x="Number of Hospital Admission")
 ```
 
-10. Number of Assigned icd9 Code  
-Patient with more than 40 assigned code have the lowest death rate.  
+#### Logistic Regression 
+Based on the initial data visualization, choose variables that are associated with the response variable.  
+1. age  
+2. overall_payor_group_descr    
+3. admission_source_descr
+4. admission_type_descr    
+5. icustay_total_num  
+6. icustay_admit_age  
+7. number_code  
+8. number_hadm   
+
+Features that are statistically significant:    
+1. Admission source from emergency room,hospital,other health institution   
+2. age
+3. insurance type: self-pay  
+4. Admission type: emergency, urgent  
+5. the number of ICU admissions  
+6. the number of hospital admissions  
+7. the number of assigned icd9 codes    
 ```{r,warning=FALSE,message=FALSE}
-# number of assigned icd9 code
-uniqueid$number_code_bin <- cut(uniqueid$number_code, breaks=c(0,5,10,20,40,Inf),labels=as.character(c(1,5,10,20,40),'>40'))
-uniqueid %>%
-    filter(!is.na(number_code_bin)) %>%
-    group_by(number_code_bin) %>%
-    summarize(Y.ratio = sum(as.numeric(hospital_expire_flg)-1)/length(hospital_expire_flg),
-              N = length(hospital_expire_flg)) %>%
-    ggplot(aes(x=number_code_bin, y=Y.ratio, fill=number_code_bin)) +
-    geom_text(aes(label = N, y = Y.ratio + 0.05),position = position_dodge(0.9), vjust = 0)+
-    geom_bar(stat='identity') +
-    guides(fill=guide_legend(title="# of Code"))+
-    scale_fill_manual(values=mycol)+
-  labs(x="Number of Assigned icd9 Code")
-```
-
-b. Use and interpret logistic regression. Make a statement about the relationship of age and in-hospital death. Comment on your decision about which features you included in this step.  
-
-1).Predictors:    
-age, overall_payor_group_descr,admission_source_descr,admission_type_descr,icustay_total_num,icustay_admit_age,number_code,number_hadm  
-
-2).Reason:  
-Given the data visualization in the above section, choose variable which has different response for different categories.   
-(That is, if we couldn't observe any correlation in visualization, we don't have
-to put it into the regression)   
-
-3).Relationship between age and death:  
-Given other predictors, age is associated with an exp(-.0098) decrease in odds ratio for in-hospital death    
-```{r,warning=FALSE,message=FALSE}
+# train:test = 8:2
+set.seed(123)
 i.train <- sample(seq(1,nrow(uniqueid)), nrow(uniqueid)*0.8)
 Xtrain <- uniqueid[i.train,]
 Xtest <- uniqueid[-i.train,]
 
-lr = with(Xtrain,glm(hospital_expire_flg=='Y'~admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+icustay_admit_age+number_code+number_hadm,family = binomial("logit")))
-lr_preds=predict(lr,Xtest,type='response')
-lr_result = data.frame(round(lr_preds,2))
+# fit the logistic regression
+lr = with(Xtrain,glm(hospital_expire_flg=='Y'~admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+number_code+number_hadm,family = binomial("logit")))
+lr_coef <- tidy(lr)[,c("term","p.value")]
+lr_coef[lr_coef$p.value<0.05,] %>%
+  mutate(p.value = round(p.value,4)) %>% kable("html") %>%
+  kable_styling(bootstrap_options="striped",full_width=F)
 
-# age (coef:-0.0098)
-lr_summary = summary(lr)
+```
 
+#### Decision Tree  
+Fit the same predictors in a decision tree and plot the tree
+```{r,warning=FALSE,message=FALSE}
+tree <- rpart(hospital_expire_flg=="Y"~ admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+number_code+number_hadm,data=Xtrain, control=rpart.control(minsplit = 50))
+rpart.plot(tree)
+```
+
+#### Logistic Regression with Cross-Validation
+Use k-fold cross validation with k=5  
+```{r,warning=FALSE,message=FALSE}
+# validation preparation 
+set.seed(456)
+folds = sample(rep(1:5,length=nrow(uniqueid)))
+idx = seq_len(nrow(uniqueid))
+uniqueid$index <- seq_len(nrow(uniqueid))
+cv = cbind(idx,folds) %>% as_tibble() %>% nest(-folds)
+cv = cv %>% 
+  arrange(folds) %>%
+  mutate(data = map(data, ~ .x %>% t() %>% c())) %>%
+  mutate(train = map(data, ~uniqueid %>% filter(!index %in% .x))) %>%
+  mutate(test = map(data,~uniqueid %>% filter(index %in% .x)))
+
+# fit the logistic model
+lr.cv.model = cv %>%
+  mutate(lr = map(train,~glm(hospital_expire_flg=="Y" ~ admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+number_code+number_hadm, data=.x,family = binomial("logit")))) %>%
+  mutate(prediction = map2(lr,test,~predict(.x,newdata=.y,type='response'))) %>%
+  mutate(prediction = map(prediction,~ifelse(.x>0.3,1,0))) %>%
+  mutate(truth = map(test, ~ifelse(.x$hospital_expire_flg=='Y',1,0)))
+```
+
+Average AUC,Accuracy,Sensitivity,Specificity,Precision,Recall:         
+```{r,warning=FALSE,message=FALSE}
+# confusion matrix
 classification_metric <- function(actual_class, predicted_class){
     res = list()
     conf_mat = table(actual_class, predicted_class) 
@@ -445,184 +246,75 @@ classification_metric <- function(actual_class, predicted_class){
     
     return(res)
 }
-```
-The accuracy, sensitivity,specificity and precision rate:
-```{r,warning=FALSE,message=FALSE}
-# determine the threshold: sum(Xtrain$hospital_expire_flg=='Y')/nrow(Xtrain) which is 0.31
-lr_cm <- classification_metric(Xtest$hospital_expire_flg=='Y',lr_preds>0.31)
-lr_cm = lr_cm %>% as_data_frame() %>% melt()
-kable(lr_cm,'html')
-```
 
-c. Fit a decision tree and plot the tree.  
-Fitting the same predictors in a decision tree:  
-```{r,warning=FALSE,message=FALSE}
-tree <- rpart(hospital_expire_flg=="Y"~ admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+icustay_admit_age+number_code+number_hadm,data=Xtrain, control=rpart.control(minsplit = 50))
+# average auc,accuracy,sensitivity,specificity,precision,recall
+for(i in 1:nrow(lr.cv.model)){
+  ret = classification_metric(lr.cv.model$truth[i]%>%unlist(),lr.cv.model$prediction[i]%>%unlist()) %>% as_tibble()
+  if(i==1){
+    measurement = ret
+  }else{
+    measurement = rbind(measurement,ret)
+  }
+}
 
-tree_pred = predict(tree,newdata=Xtest,type='vector') 
-```
-Plot the tree:  
-```{r,warning=FALSE,message=FALSE}
-rpart.plot(tree)
-```
-The accuracy, sensitivity,specificity and precision rate:   
-```{r,warning=FALSE,message=FALSE}
-sum(Xtrain$hospital_expire_flg=='Y')/nrow(Xtrain)
-tree_cm <- classification_metric(Xtest$hospital_expire_flg=='Y',tree_pred>0.314)
-tree_cm = tree_cm %>% as_data_frame() %>% melt()
-kable(tree_cm,'html')
+lapply(measurement,mean) %>% as_tibble() %>% kable() %>% kable_styling(full_width = F,bootstrap_options = 'stripe')
 ```
 
-d. Use tidyr and purrr to create 5-fold cross-validation for logistic regression and decision tree <span style="color:red">(e.g. the code for the poll may help)</span>. Plot ROCs and report AUCs. Make a comparison between logistic regression and decision tree.  
-
-Used two different methods to create folds:  
-1). crossv_kfold() function for logistic regression  
-2). the one similar to the code for the poll for decision tree  
-Logistic regression has higer AUC than decision tree  
-
-1.Logistic Regression  
+Plot the ROC curve:AUC is 0.63  
 ```{r,warning=FALSE,message=FALSE}
-# logistics regression:
-# 1).train:
-lr_train_model = uniqueid %>% crossv_kfold(5) %>%
-  mutate(model = purrr::map(train,~glm(hospital_expire_flg=='Y'~admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+icustay_admit_age+number_code+number_hadm,data = .,family = binomial("logit"))))
-# 2).test:
-lr_prediction = lr_train_model %>%
-  unnest(fitted = map2(model,test,~augment(.x,newdata=.y)),
-  # unnest: make each element of the list in its own row
-  # augment: do prediction + show them in relation to orginal data
-  # still need to use predict(): because augment() only gives us 
-  # linear predictor but we need fitted value instead.
-         pred = map2(model,test,~predict(.x,.y,type='response')))
-# 3). result:
-lr_result = lr_prediction %>% 
-  mutate(pred = round(pred,2)) %>%
-  select(.id,pred,hospital_expire_flg)
-
-# 4).ROC Curve:
-lr_result = lr_result %>%
-  mutate(truth = ifelse(hospital_expire_flg=='Y',1,0))
-lr_roc = lr_result %>%
-  ggplot(aes(d=truth,m=pred)) + geom_roc()
-lr_roc +
-  style_roc(theme = theme_grey) +
-  ggtitle("logistic regression") + 
-  annotate("text", x = .75, y = .25, 
-           label = paste("AUC =", round(calc_auc(lr_roc)$AUC, 2))) +
-  scale_x_continuous("1 - Specificity", breaks = seq(0, 1, by = .1))
-
+lr_pred = ROCR::prediction(lr.cv.model$prediction,lr.cv.model$truth)
+lr_rates = ROCR::performance(lr_pred,"tpr","fpr")
+lr_auc = mean(ROCR::performance(lr_pred,"auc")@y.values %>% unlist())
+plot(lr_rates,avg="vertical",pin=c(10,10))
 ```
 
-2. Decision Tree  
+#### Decision tree with Cross-Validation  
+Use k-fold cross validation with k=5            
 ```{r,warning=FALSE,message=FALSE}
-# decision tree
-# 1). create 5-fold 
-folds = sample(rep(1:5,length=nrow(uniqueid)))
-idx = seq_len(nrow(uniqueid))
-cv = cbind(idx,folds) %>% as_tibble()
-cv = cv %>% nest(-folds)
-uniqueid$index <- seq_len(nrow(uniqueid))
-cv = cv %>% 
-  mutate(data = map(data, ~ .x %>% t() %>% c())) %>%
-  arrange(folds) %>% 
-  mutate(train = map(data, ~uniqueid %>% filter(!index %in% .x))) %>%
-  mutate(test = map(data,~uniqueid %>% filter(index %in% .x)))
-
-# 2). train + test + result:
-tree_train_model = cv %>%
+tree.cv.model = cv %>%
   mutate(tree = map(train,~rpart(hospital_expire_flg=="Y" ~ admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+icustay_admit_age+number_code+number_hadm, data=.x,control=rpart.control(minsplit = 50)))) %>%
   mutate(prediction = map2(tree,test,~predict(.x,newdata=.y,type='vector'))) %>%
-  mutate(prediction = map(prediction,~.x)) %>%
-  mutate(truth = map(test, ~.x$hospital_expire_flg=='Y'))
-
-#3).ROC Curve:
-truth <- unlist(tree_train_model$truth)
-preds <- unlist(tree_train_model$prediction)
-tree_roc <- data.frame(D=as.numeric(truth),M=preds)
-tree_roc = tree_roc %>%
-  ggplot(aes(d=D,m=M)) + geom_roc() 
-
-tree_roc +
-  style_roc(theme = theme_grey) +
-  ggtitle("decision tree") + 
-  annotate("text", x = .75, y = .25, 
-           label = paste("AUC =", round(calc_auc(tree_roc)$AUC, 2))) +
-  scale_x_continuous("1 - Specificity", breaks = seq(0, 1, by = .1))
-
+  mutate(prediction = map(prediction,~ifelse(.x>0.3,1,0))) %>%
+  mutate(truth = map(test, ~ifelse(.x$hospital_expire_flg=='Y',1,0)))
 ```
 
-e. Draw learning curves for logistic regression and decision tree. Does one algorithm dominate the other? If not, when does logistic regression have better performance?
-Logistic regression always dominates decision tree in terms of accuracy  
-1. Learning curve for logistic regression  
-```{r,warning=FALSE,message=FALSE}
-sample_unit = 500
-test_idx = sample(uniqueid$index,1500)
-test = uniqueid[test_idx,] %>% as_data_frame()
-train = uniqueid[-test_idx,] %>% as_data_frame()
-
-plot_lc_lr = list()
-
-for(i in 1:6){
-  lc_train = dplyr::sample_n(train,sample_unit*i,replace=FALSE)
-  #model
-  lc_model_lr = glm(hospital_expire_flg=='Y'~admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+icustay_admit_age+number_code+number_hadm,data=lc_train,family = binomial("logit"))
-  #prediction 
-  lc_pred_lr = predict(lc_model_lr,test,type='response')
-  lr_cm = classification_metric(test$hospital_expire_flg=='Y',lc_pred_lr>sum(lc_train$hospital_expire_flg=="Y")/nrow(lc_train))
-  lr_cm[["sample_size"]] = round(sample_unit*i,0)
-  plot_lc_lr[[i]] = lr_cm %>% unlist()
-}
-plot_lc_lr <- do.call("rbind",plot_lc_lr) %>% as.data.frame()
-plot_lc_lr$model <- rep("LR",nrow(plot_lc_lr))
-
-```
-
-2. Learning curve for decision tree  
-```{r,warning=FALSE,message=FALSE}
-plot_lc_dt <- list()
-
-for(i in 1:6){
-  lc_train = dplyr::sample_n(train,sample_unit*i)
-  #model
-  lc_model_dt = rpart(hospital_expire_flg=="Y" ~ admission_source_descr+age+overall_payor_group_descr+admission_type_descr+icustay_total_num+icustay_admit_age+number_code+number_hadm,data=lc_train,control=rpart.control(minsplit = 50))
-  #prediction 
-  lc_pred_dt = predict(lc_model_dt,newdata=test,type='vector') #matrix
-  dt_cm = classification_metric(test$hospital_expire_flg=='Y',lc_pred_dt> sum(lc_train$hospital_expire_flg=="Y")/nrow(lc_train))
-  dt_cm[["sample_size"]] = sample_unit*i
-  plot_lc_dt[[i]] = dt_cm %>% unlist()
+Average AUC,Accuracy,Sensitivity,Specificity,Precision,Recall: 
+```{R}
+for(i in 1:nrow(tree.cv.model)){
+  ret.tree = classification_metric(tree.cv.model $truth[i]%>%unlist(),tree.cv.model $prediction[i]%>%unlist()) %>% as_tibble()
+  if(i==1){
+    measurement.tree = ret.tree
+  }else{
+    measurement.tree = rbind(measurement.tree,ret.tree)
+  }
 }
 
-plot_lc_tree <- do.call("rbind",plot_lc_dt) %>% as.data.frame()
-plot_lc_tree$model <- rep("DT",nrow(plot_lc_tree))
-
-
-comb <- rbind(plot_lc_lr,plot_lc_tree)
-ggplot(comb, aes(x=sample_size, y=accuracy, color=model))+
-  geom_line()
+lapply(measurement.tree,mean) %>% as_tibble() %>% kable() %>% kable_styling(bootstrap_options = 'stripe',full_width = F)
 ```
 
-f. Under what circumstances can the LR model predicting the probability of in-hospital death be applied? 
-  * To whom it may be applied?   
-  It applies to patients with variables which are significant in our logistic model.   
-  * When would a person be able to use the risk score?   
-  The same as above.    
-  * What can serve as a baseline rate (baseline prabability of in-hospital death)?    
-  Baseline is the training data's in-hospital death ratio.   
+Plot the ROC curve: AUC is 0.62  
+```{r,warning=FALSE,message=FALSE}
+tree_pred = ROCR::prediction(tree.cv.model$prediction,tree.cv.model$truth)
+tree_rates = ROCR::performance(tree_pred,"tpr","fpr")
+tree_auc = mean(ROCR::performance(tree_pred,"auc")@y.values %>% unlist())
+plot(tree_rates,avg="vertical",pin=c(10,10))
+```
 
-g. Estimate the odds and probability of in-hospital death for a patient with following features using the trained LR model.  
-    * age at death: 61
-    * gender: M
-    * ethnicity (ethnicity_descr): WHITE
-    * type of insurance (overall_payor_group_descr): PRIVATE
-    * source of admission (admission_source_descr): PHYS REFERRAL/NORMAL DELI
-    * type of admission (admission_type_descr): URGENT
-    * the number of ICU admissions (icustay_total_num): 1
-    * age at icu admission (icu_admit_age): 58
-    * the number of hospital admissions: 2
-    * the number of assigned icd9 codes: 11
+#### Application  
+Estimate the odds and probability of in-hospital death for a patient with following features using the trained LR model.      
+    * age at death: 61  
+    * gender: M  
+    * ethnicity (ethnicity_descr): WHITE  
+    * type of insurance (overall_payor_group_descr): PRIVATE  
+    * source of admission (admission_source_descr): PHYS REFERRAL/NORMAL DELI  
+    * type of admission (admission_type_descr): URGENT  
+    * the number of ICU admissions (icustay_total_num): 1  
+    * age at icu admission (icu_admit_age): 58  
+    * the number of hospital admissions: 2  
+    * the number of assigned icd9 codes: 11  
 
-The probability of death for this particular patient is 0.0054.  
-And the odds is 0.0054.  
+The probability of death for this particular patient is 0.13.    
+And the odds is 0.15.    
 ```{r,warning=FALSE,message=FALSE}
 tmp <- uniqueid[1,]
 tmp$age <- 61
@@ -639,75 +331,3 @@ tmp$number_code <- 11
 tmp_preds=predict(lr,tmp,type='response')
 odds <- tmp_preds/(1-tmp_preds)
 ```
-
-h. Divide the LR model coefficients (from (b)) by the coefficient with the smallest absolute value (call this m), and round the adjusted coefficients to have 2 significant digits, e.g. 4871 becomes 4900. Call these points. 1/m is the number of points to increase the log odds by 1. 
-* Using the more human interpretable (but mathematically suboptimal) points system from the sentence above, plot a graph with y-axis the probability of in-hospital death, and x-axis number of points (log scale if appropriate). Then, calculate the **probability** of in-hospital death for an individual with the following features:
-    * age at death: 78
-    * gender: F
-    * ethnicity (ethnicity_descr): BLACK/AFRICAN AMERICAN
-    * type of insurance (overall_payor_group_descr): MEDICARE
-    * source of admission (admission_source_descr): CLINIC REFERRAL/PREMATURE
-    * type of admission (admission_type_descr): EMERGENCY
-    * the number of ICU admissions (icustay_total_num): 1
-    * age at icu admission (icu_admit_age): 76.5
-    * the number of hospital admissions: 3
-    * the number of assigned icd9 codes: 14  
-
-There is 0.012 chance that this particular patient die in the hospital.
-```{r,warning=FALSE,message=FALSE}
-
-lr_coef = lr$coefficients 
-m = min(abs(lr_coef))
-lr_coef_adj = lr_coef/m
-
-# adjusted coefficients to have 2 significant digits
-for(i in 1:length(lr_coef_adj)){
-  if(abs(lr_coef_adj[i]) > 100)
-    lr_coef_adj[i] = round(lr_coef_adj[i],-2)
-  else
-    lr_coef_adj[i] = round(lr_coef_adj[i],0)
-}
-
-# patient's data
-tmp <- uniqueid[1,]
-tmp$age <- 78 # -400
-tmp$gender <- "F"
-tmp$ethnicity_descr <- "BLACK/AFRICAN AMERICAN"
-tmp$overall_payor_group_descr <- "MEDICARE" # -59
-tmp$admission_source_descr <- "CLINIC REFERRAL/PREMATURE"
-tmp$admission_type_descr <- "EMERGENCY" # 300
-tmp$icustay_total_num <- 1 #92
-tmp$icustay_admit_age <- 76.5 # 400
-tmp$number_hadm <- 3 # -300
-tmp$number_code <- 14 # 3
-
-
-# plot
-points=seq(-1000,1000,100)
-approx_prob = list()
-
-for(i in 1:length(points)){
-  log_odds_increased = points[i]*m
-  odds = exp(log_odds_increased)
-  approx_prob[[i]] = odds/(1+odds)
-}
-
-plot = approx_prob %>% unlist() %>% cbind(points) %>% as_data_frame()
-colnames(plot) <- c('prob.death','points')
-plot %>%
-  ggplot()+
-  geom_line(aes(x=points,y=prob.death))
-
-# calculate the points for this patient
-points = 78*(-400)+(-59)+300+92+76.5*400+3*(-300)+14*3
-log_odds_increased = points*m # points/(1/m)
-odds = exp(log_odds_increased)
-approx_prob = odds/(1+odds)
-
-predict(lr,tmp,type='response')
-```
-
-Congratulations, you've created a score for predicting in-hospital death among patients admitted to the ICU.
-
-### Hand-in
-The homework is due **2/9**. Please turn it in as a commented Rmd or R file in using the Canvas link. You may alternatively provide a link to a git repository, however this is not required (it will be for the proposal and project). Note that for fairness we will grade based on the timestamped version at the due date time.
