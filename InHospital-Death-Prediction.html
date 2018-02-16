@@ -122,8 +122,9 @@ $(document).ready(function () {
 </div>
 
 
-<div id="objectives" class="section level4">
-<h4>OBJECTIVES</h4>
+<blockquote>
+<p>OBJECTIVE</p>
+</blockquote>
 <ol style="list-style-type: decimal">
 <li>Predict in-hospital death among patients admitted to the ICU<br />
 </li>
@@ -131,7 +132,6 @@ $(document).ready(function () {
 </li>
 <li>Conduct association analysis and predictive analysis</li>
 </ol>
-</div>
 <div id="features" class="section level4">
 <h4>Features:</h4>
 <ul>
@@ -558,7 +558,16 @@ plot(tree_rates,avg=&quot;vertical&quot;,pin=c(10,10))</code></pre>
 <div id="application" class="section level4">
 <h4>Application</h4>
 <p>Estimate the odds and probability of in-hospital death for a patient with following features using the trained LR model.<br />
-* age at death: 61 * gender: M * ethnicity (ethnicity_descr): WHITE * type of insurance (overall_payor_group_descr): PRIVATE * source of admission (admission_source_descr): PHYS REFERRAL/NORMAL DELI * type of admission (admission_type_descr): URGENT * the number of ICU admissions (icustay_total_num): 1 * age at icu admission (icu_admit_age): 58 * the number of hospital admissions: 2 * the number of assigned icd9 codes: 11</p>
+* age at death: 61<br />
+* gender: M<br />
+* ethnicity (ethnicity_descr): WHITE<br />
+* type of insurance (overall_payor_group_descr): PRIVATE<br />
+* source of admission (admission_source_descr): PHYS REFERRAL/NORMAL DELI<br />
+* type of admission (admission_type_descr): URGENT<br />
+* the number of ICU admissions (icustay_total_num): 1<br />
+* age at icu admission (icu_admit_age): 58<br />
+* the number of hospital admissions: 2<br />
+* the number of assigned icd9 codes: 11</p>
 <p>The probability of death for this particular patient is 0.13.<br />
 And the odds is 0.15.</p>
 <pre class="r"><code>tmp &lt;- uniqueid[1,]
