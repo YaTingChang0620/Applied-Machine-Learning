@@ -8,7 +8,7 @@ Topic:
 * support vector machines
 * neural networks
 * partition-based methods
-* ensembling
+* ensembling-random forest: [International-Stroke-Trial](https://github.com/YaTingChang0620/Applied-Machine-Learning/blob/master/Internation-Stroke-Trial.rmd)
 * dimensionality reduction
 * prediction versus attribution
 * algorithmic evaluation
