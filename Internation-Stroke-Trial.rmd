@@ -1,0 +1,201 @@
+---
+title: "International Stroke Trial"
+output: html_document
+---
+The International Stroke Trial was a study comparing the effectiveness of 
+medications in a populaton of patients who had suffered strokes  
+( The publication was in the leading British medical journal Lancet:   http://www.sciencedirect.com/science/article/pii/S0140673697040117)  
+
+### Preliminaries      
+* The definition of the primary outcome in this study:  
+Death or dependence at 6 months, also death within 14 days  
+* The variable name(s) for the intervention, and their possible values:   
+Aspirin (RXASP: (Y,N)) and Heparin (RXHEP: (M,L,N))  
+* The population being studied:  
+Patient have had a stroke within the last 48 hours, have no evidence of intracranial bleeding, and have no clear contraindications to the trial drugs  
+* Covariates included in this study: Demographics including age, gender, and clinical features at time of presentation  
+
+### Input files and load packages  
+```{R,warning=FALSE,message=FALSE}
+loadlib <- function(libs){
+  for(lib in libs){
+    if(!do.call(require,as.list(lib))) install.packages(lib)
+    do.call(require,as.list(lib))
+  }
+}
+libs = c("tidyverse","ggplot2","tableone","mice","randomForest")
+loadlib(libs)
+
+IST <- read_csv("IST_corrected.csv")
+```
+
+### Table one
+Descriptive statistics for in groups of {aspirin, no aspirin} use, including information on age, gender, systolic blood pressure, and conscious state.  
+Variable name: AGE,SEX,RXASP(aspirin),RSBP(blood pressure),RCONSC(conscious state)  
+```{R,warning=FALSE,message=FALSE}
+CreateTableOne(data = IST %>% select(SEX,AGE,RSBP,RCONSC,RXASP),strata = "RXASP")
+```
+
+### Machine Learning Analysis    
+####   Assumptions:      
+1. Use a simple 50-50 train-test split  
+2. Outcome of interest: dead or dependent at 6 months  
+
+* Percent of patients are dead or dependent at 6 months in train set and test set:  
+```{R,warning=FALSE,message=FALSE}
+IST = IST %>%
+  mutate(dod=ifelse(OCCODE==1|OCCODE==2,1,0))
+set.seed(123)
+
+random = sample(1:nrow(IST),nrow(IST)/2)
+ist.train = IST[random,]
+ist.test = IST[-random,]
+
+ist.train %>% group_by(dod) %>% summarise(train = n()) %>%
+  bind_cols(test = ist.test %>% group_by(dod) %>% summarise(test = n()) %>%    select(test)) %>% mutate(trainPct = round(train/nrow(ist.train),3), testPct = round(test/nrow(ist.test),3))
+```
+
+* Choose variables to include in the model:    
+```{R,warning=FALSE,message=FALSE}
+variables = c("RDELAY","RCONSC","SEX","AGE","RSLEEP","RATRIAL","RCT",
+              "RVISINF","RHEP24","RASP3","RSBP","RDEF1","RDEF2","RDEF3",
+              "RDEF4","RDEF5","RDEF6","RDEF7","RDEF8","STYPE","RXASP","RXHEP","dod")
+
+IST.var = IST[,variables]
+
+# convert features that are integers but really categorical
+IST.var[map(IST.var,function(x) length(unique(x))<10) %>% unlist()] = map(IST.var[,map(IST.var,function(x) length(unique(x))<10) %>% unlist()],as.factor)
+```
+
+* Handling Missing Data  
+    + outcome cannot be included in the imputation  
+    + decide whether to exclude, impute, and/or use indicator variables for data with missing values.  
+```{R,warning=FALSE,message=FALSE}
+
+IST.impute = IST.var
+IST.impute[IST.impute=='C'|IST.impute=='c'] = NA
+
+# check missing values in each variable
+map(IST.impute,function(x) sum(is.na(x)))
+# use MICE to impute missing value 
+mIST = mice(IST.impute %>% select(-dod), m=1, maxit=5)
+IST.mice = mice::complete(mIST) %>% as_tibble()
+IST.mice = data.frame(dod = IST.impute$dod) %>% bind_cols(IST.mice) %>% as_tibble()
+
+IST.mice = IST.mice %>% mutate_if(is.character,as.factor)
+random = sample(1:nrow(IST.mice),nrow(IST.mice)/2)
+train_i = IST.mice[random,]
+test_i = IST.mice[-random,]
+```
+
+* Logistic Regression  
+```{R,warning=FALSE,message = FALSE}
+
+lr = glm(dod~.,data=train_i,family=binomial(link='logit'))
+lr_pred = predict(lr,test_i,type='response') %>% as_tibble() %>% mutate(truth = test_i$dod,pred = value >0.5)
+```
+
+* Random Forest     
+```{R,warning=FALSE,message = FALSE}
+rf = randomForest(dod~.,data=train_i %>% filter(!is.na(dod)))
+rf_pred = predict(rf,test_i,type='prob')[,2] %>% as_tibble()
+rf_pred = rf_pred %>% mutate(truth = test_i$dod, pred = value > 0.5)
+```
+
+* RF - variable importance    
+```{R,warning=FALSE,message=FALSE}
+# variable importance
+rf_var = rf$importance %>% as.data.frame() %>% rownames_to_column()
+rf_var = rf_var %>% rename(feature = rowname, importance = MeanDecreaseGini)
+rf_var %>%
+  mutate(feature = fct_reorder(feature,importance)) %>%
+  ggplot(aes(x=feature,y=importance)) +
+  geom_col()+
+  coord_flip()
+```
+
+* Accuracy For Logistic Regression and Random Forest  
+```{R,warning=FALSE,message=FALSE}
+confidence_interval = function(accuracy, n, z=-qnorm(0.025)) {
+  (z * sqrt(accuracy*(1-accuracy)/n)) %>%
+    (function(se) c(accuracy-se, accuracy+se))
+}
+
+# lr accuracy
+lr_accuracy = lr_pred %>% select(-value) %>% table() %>% (function(.) sum(diag(.)/sum(.)))
+lr_ci = confidence_interval(lr_accuracy,n=nrow(lr_pred))
+
+# rf accuracy
+rf_accuracy = rf_pred %>% select(-value) %>% table() %>% (function(.) sum(diag(.)/sum(.)))
+rf_ci = confidence_interval(rf_accuracy,n=nrow(rf_pred))
+
+accuracy = data_frame(method = c('LR','RF'),
+           accuracy = c(lr_accuracy,rf_accuracy),
+           ci_upper = c(lr_ci[1],rf_ci[1]),
+           ci_lower = c(lr_ci[2],rf_ci[2]))
+```
+
+* ROC curve for LR and RF  
+```{r,warning=FALSE,message=FALSE}
+library(ROCR)
+
+lr_pred$pred <- as.numeric(lr_pred$pred)
+rf_pred$pred <- as.numeric(rf_pred$pred)
+
+# prediction:Function to create prediction objects:
+# prediction(prediction,label)
+
+# performance: function to create performance objects:
+# performance(prediction.obj,measure)
+method_performance = function(pred,truth,y="tpr",x="fpr"){
+  prediction(pred,truth) %>% performance(y,x)
+}
+
+roc = list()
+roc$lr = method_performance(lr_pred$value,lr_pred$truth)
+roc$rf = method_performance(rf_pred$value,rf_pred$truth)
+
+
+df_plot <- function(pref){
+  df = data_frame(y=pref@y.values[[1]],
+                  x=pref@x.values[[1]])
+  df
+}
+
+roc_plot <- function(roc){
+  ggplot(data = df_plot(roc$lr),aes(x=x,y=y,color='lr'))+
+    geom_line()+
+    geom_line(data=df_plot(roc$rf),aes(x=x,y=y,color='rf'))+
+    xlab(roc$lr@x.name) + ylab(roc$lr@y.name)
+}
+
+roc_plot(roc)
+
+```
+
+### Conclusion  
+1. The average treatment effect of aspirin on death or dependence at 6 months:
+ATE = P(dod=1|RXASP=1) - P(dod=1|RXASP=0) = -0.013.  
+This was not the finding the trials team hoped to find. Aspirin marginally reduced death or dependence in this study, but was not significant.     
+```{r,warning=FALSE,message=FALSE}
+table(IST$RXASP,IST$dod)
+# P(dod=1|RXASP=1)
+p1 = 6000/(6000+3720)
+# P(dod=1|RXASP=0)
+p2 = 6125/(6125+3590)
+
+p1-p2
+```
+
+
+2. Number to treat: 1/|ATE| = 75  
+```{R,warning=FALSE,message=FALSE}
+1/abs(p1-p2)
+```
+
+3. Relative Risk:0.97  
+```{R,warning=FALSE,message=FALSE}
+p1/p2
+```
+
+4. Algorithm: logistic regression performs better in terms of accuracy rate and ROC curve.   

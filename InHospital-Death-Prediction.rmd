@@ -227,7 +227,7 @@ lr.cv.model = cv %>%
   mutate(truth = map(test, ~ifelse(.x$hospital_expire_flg=='Y',1,0)))
 ```
 
-Average AUC,Accuracy,Sensitivity,Specificity,Precision,Recall:         
+Average AUC,A ccuracy,Sensitivity,Specificity,Precision,Recall:         
 ```{r,warning=FALSE,message=FALSE}
 # confusion matrix
 classification_metric <- function(actual_class, predicted_class){
