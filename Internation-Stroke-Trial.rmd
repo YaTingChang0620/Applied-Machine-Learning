@@ -1,7 +1,5 @@
----
-title: "International Stroke Trial"
-output: html_document
----
+## International Stroke Trial  
+
 The International Stroke Trial was a study comparing the effectiveness of 
 medications in a populaton of patients who had suffered strokes  
 ( The publication was in the leading British medical journal Lancet:   http://www.sciencedirect.com/science/article/pii/S0140673697040117)  
