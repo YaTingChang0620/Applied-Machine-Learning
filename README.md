@@ -12,7 +12,7 @@ Topic:
 * dimensionality reduction
 * prediction versus attribution
 * algorithmic evaluation
-* Linear Models Regularization Using Basis Function
+* Models Regularization Using Basis Function [_Daily-Glucose-Modeling_](https://github.com/YaTingChang0620/Applied-Machine-Learning/blob/master/Daily-Glucose-Modeling.Rmd)
 
 
 
