@@ -1,12 +1,4 @@
----
-  title: "Basis functions and regularization for daily glucoses"
-  output:
-    html_document
-  fig_width: 7
-  fig_height: 5
-  Authour: YA TING CHANG
----
- 
+# Basis functions and regularization for daily glucoses
 Blood glucose is a measurement that fluctuates throughout the day, with typical rises after meals.    
 For the majority healthy individual, glucose ranges from 72 mg/dl to 108 mg/dl, and up to 140 mg/dl after eating.    
 Understanding blood glucose level ranges can be a key part of diabetes self-management.  
