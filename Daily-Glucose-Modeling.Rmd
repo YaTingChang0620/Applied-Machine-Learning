@@ -1,0 +1,263 @@
+---
+  title: "Basis functions and regularization for daily glucoses"
+  output:
+    html_document
+  fig_width: 7
+  fig_height: 5
+  Authour: YA TING CHANG
+---
+ 
+Blood glucose is a measurement that fluctuates throughout the day, with typical rises after meals.    
+For the majority healthy individual, glucose ranges from 72 mg/dl to 108 mg/dl, and up to 140 mg/dl after eating.    
+Understanding blood glucose level ranges can be a key part of diabetes self-management.  
+  
+First, We model fluctuations in glucose in a single patient: 13033 over the entire range of data.  
+```{r,warning=FALSE,message=FALSE}
+callfun <- function(libs){
+  for(lib in libs){
+    if(!do.call(require,as.list(lib))) install.packages(lib)
+    else
+      do.call(require,as.list(lib))
+  }
+}
+
+libs <- c('tidyverse','data.table','lubridate','glmnet','ggplot2','gridExtra')
+callfun(libs)
+
+event = fread("labevents.csv") %>% as_tibble()
+items = fread("d_labitems.csv") %>% as_tibble()
+event.items = left_join(event,items,by='itemid')
+
+event.items$charttime <- ymd_hms(event.items$charttime)
+
+# entire range of data
+event.items %>%
+  filter(subject_id==13033 & test_name=='GLUCOSE' & fluid=='BLOOD') %>%
+  select(subject_id,valuenum,charttime) %>%
+  arrange(charttime) %>%
+  ggplot(aes(x=charttime,y=valuenum,col='glucose')) +
+  geom_point() +
+  theme_bw() +
+  labs(x='Date',y='Value',color='item')
+```
+
+- Apply basis function  
+Since glucose is a measurement that fluctuates daily, we decided to use period function (1-d sine and cosine) as our basis fuction to model 'daily' fluctuations in glucose. We could use hour(24 hrs) or minute(24*60 mins) as our period.        
+```{R,warning=FALSE,message=FALSE}
+sincos = function(dat, variable, period=2*pi, K=10) {
+  data = dat
+  for(i in 1:K) {
+    data[[paste0("sin_",i)]] = sin(data[[variable]]*i*2*pi/period)  
+  }
+  for(i in 1:K) {
+    data[[paste0("cos_",i)]] = cos(data[[variable]]*i*2*pi/period)
+  }
+  data
+}
+
+event.items$minute <- hour(event.items$charttime)*60 + minute(event.items$charttime)
+period = 60*24 # repeat on interval of period
+k=10 # fluctuation of trend
+
+# train set <= 3417.5
+pt.train = event.items %>%
+  filter(subject_id==13033 & year(charttime) <= 3417.5 & 
+           test_name == 'GLUCOSE'& fluid=='BLOOD') %>%
+  select(minute,valuenum)
+data.train = sincos(pt.train,'minute',period,k) 
+
+# tune set > 3417.5 
+pt.tune = event.items %>%
+  filter(subject_id==13033 & year(charttime) > 3417.5 & 
+           test_name == 'GLUCOSE'& fluid=='BLOOD') %>%
+  select(minute,valuenum)
+data.tune = sincos(pt.tune,'minute',period,k) %>% na.omit()
+
+```
+
+- Use glmnet to learn a daily trend for the individual.  
+By plotting the coefficient with lambda on the x-axis, we could see that
+coefficients approach to 0 as lambda increases.    
+```{R,warning=FALSE,message=FALSE}
+set.seed(123)
+# lam = 10^seq(from=1,to=-2,length.out = 100)
+# lam: 1). user supplied 
+#      2). typical usage is to have the program compute its own lambda sequence
+#      3). supply a decreasing sequence of lambda
+lasso = glmnet(x=data.train %>% select(-valuenum,-minute) %>% as.matrix(), y=data.train$valuenum,alpha=1) #alpha=1(lasso), alpha=0(ridge)
+plot = coef(lasso) %>% t() %>% as.matrix() %>% as.data.frame()
+plot$lambda =lasso$lambda
+
+plot = plot %>% gather(key='lambda')
+colnames(plot) <- c('lambda','feature','coef')
+plot = plot %>%
+  filter(feature!='(Intercept)')
+plot %>%
+  ggplot(aes(x=log10(lambda),y=coef,col=feature)) +
+  geom_line()+
+  theme_bw()
+```
+
+We then find the lambda that performed best on the tune data.  
+```{R,warning=FALSE,message=FALSE}
+pred =  predict(lasso,newx=data.tune%>%select(-minute,-valuenum)%>%as.matrix()) %>% as_data_frame()
+square.error = colSums((data.tune$valuenum - pred)^2)
+min.error = which.min(square.error)
+#lasso$lambda[min.error]
+```
+
+- Plot the daily trend over one day and the true values (time of day only).       
+We also calculate the total sum of squares ($\sum_{i=1}^N (y_i-\bar{y})^2$) and the residual sum of squares ($\sum_{i=1}^N (y_i-\hat{y})^2$).  
+```{R,warning=FALSE,message=FALSE}
+pred = pred[,min.error]
+pred$minute = data.tune$minute
+colnames(pred) <- c('pred','value')
+ggplot()+
+  geom_point(data=data.tune,aes(x=minute/60,y=valuenum,col='true')) +
+  geom_line(data=pred,aes(x=value/60, y=pred,col='pred'))+
+  labs(x='Time of day(hour)',y='Glucose')
+  
+# residual sum of square
+rss = sum((data.tune$valuenum-pred$pred)^2)
+# total sum of squares
+tss = sum((data.tune$valuenum-mean(data.tune$valuenum))^2)
+# r-square
+Rsquare = 1-(rss/tss)
+```
+
+We could observe the daily variation of glucose in this individual:   
+There are three peaks in glucose for this patient: 8 am, 1pm and 6pm. 
+The highest level falls in 1pm with predicted value larger than 200 mg/dl and the lowest is at 3 am. For the majority healthy individual, glucose ranges from 72 mg/dl to 108 mg/dl, and up to 140 mg/dl after eating. Apparently, the glucose of this individual is higher than a healthy people's glucose level.   
+
+### Two dimensions
+The above is 1-d Fourier basis function. We could also use 2-d Fourier basis functions to model the distribution.  
+Below is a toy distribution we are about to model:  
+```{r, quiet=T,message=F}
+# Generate some data - do not change
+set.seed(12345)
+data.size = 2000
+get_data = function(n=data.size, noise=0.1) {
+  df = data.frame(x1 = rnorm(n),x2=4*runif(n)-2) %>%
+    tbl_df() %>%
+    mutate(y = (x1^2+abs(x2)*2)<1 | ((x1-1)^2 + (x2+1)^2)<0.16) %>%
+    mutate(y = (function(.) {.[runif(data.size)<noise] = 0; .})(y)) %>%
+    mutate(y = (function(.) {.[runif(data.size)<noise] = 1; .})(y))
+  df
+}
+
+df = get_data(data.size)
+
+ggplot(data = df, aes(x=x1,y=x2,color=y)) + 
+  geom_point() + 
+  coord_cartesian(xlim=c(-3,3), ylim=c(-3,3)) + scale_color_gradient2()
+```
+
+We could build a 2-d Fourier basis from x1 and x2 values.
+```{r, quiet=T,message=F}
+# Transforms two variables in a data frame using:
+#   2-d basis expansions (Fourier) for x1 and x2, for k = 1 to K.
+# This requires sin(k*x1)*sin(j*x2) for k=1 to K and j=1 to J,
+#   for all 4 sin cos pairs. We set J=K here for simplicity. 
+sincos2 = function(dat, variable1="x1", variable2="x2", period=2*pi, K=6) {
+  data = dat
+  for(i in 1:K) {
+    for(j in 1:K) {
+      data[[paste0("sin_",i,variable1,"sin_",j,variable2)]] =
+        sin(data[[variable1]]*i*2*pi/period) *
+        sin(data[[variable2]]*j*2*pi/period)
+    }
+  }
+  for(i in 1:K) {
+    for(j in 1:K) {
+      data[[paste0("sin_",i,variable1,"cos_",j,variable2)]] =
+        sin(data[[variable1]]*i*2*pi/period) *
+        cos(data[[variable2]]*j*2*pi/period)
+    }
+  }
+  for(i in 1:K) {
+    for(j in 1:K) {
+      data[[paste0("cos_",i,variable1,"sin_",j,variable2)]] =
+        cos(data[[variable1]]*i*2*pi/period) *
+        sin(data[[variable2]]*j*2*pi/period)
+    }
+  }
+  for(i in 1:K) {
+    for(j in 1:K) {
+      data[[paste0("cos_",i,variable1,"cos_",j,variable2)]] =
+        cos(data[[variable1]]*i*2*pi/period) *
+        cos(data[[variable2]]*j*2*pi/period)
+    }
+  }
+  data
+}
+
+df12 = df %>% sincos2(variable1="x1", variable2="x2")
+```
+
+Conduct regularized logistic regression on the basis expansion data to predict $y$.  
+Plot the predictions on the training data.  
+```{R,warning=FALSE,message=FALSE}
+ylasso = glmnet(x=df12 %>% select(-x1,-x2,-y) %>% as.matrix(), y = df12$y,family = 'binomial') # family = response type
+
+pred = predict(ylasso,newx=df12 %>% select(-x1,-x2,-y) %>% as.matrix(),type='response',s=0.02) %>% as_data_frame()
+pred = pred %>%
+  mutate(x1 = df12$x1,
+         x2 = df12$x2) 
+
+# transform the predicted class to numeric
+pred = pred %>% mutate_if(is.character,as.numeric) 
+pred = pred %>% rename(class = `1`)
+
+ggplot(data = pred, aes(x=x1,y=x2,color=class)) + 
+  geom_point() + 
+  coord_cartesian(xlim=c(-3,3), ylim=c(-3,3)) + scale_color_gradient2()
+
+```
+
+- Conduct cross-validation on the training data, and plot the difference between the predictions and true labels  
+```{r,warning=FALSE,message=FALSE}
+ylasso = cv.glmnet(x=df12 %>% select(-x1,-x2,-y) %>% as.matrix(), y = df12$y,family = 'binomial') 
+
+# find the minimum lambda
+lam.min = ylasso$lambda.min
+
+# use minimum lambda from train data to predict on test data
+pred = predict(ylasso,newx=df12 %>% select(-x1,-x2,-y) %>% as.matrix(),type='response',s=lam.min) %>% as_data_frame()
+pred = pred %>%
+  mutate(x1 = df12$x1, x2 = df12$x2, pred = as.numeric(pred$`1`))
+pred$`1` <- NULL
+
+# prediction
+pred = ggplot(data = pred) +
+  geom_point(aes(x=x1,y=x2,col=pred)) +
+  coord_cartesian(xlim=c(-3,3), ylim=c(-3,3)) + scale_color_gradient2()+
+  ggtitle('Predicted label')
+
+# true
+true = ggplot(data=df12) +
+  geom_point(aes(x=x1,y=x2,col=y))+
+  coord_cartesian(xlim=c(-3,3), ylim=c(-3,3))+scale_color_gradient2()+
+  ggtitle('True label')
+
+grid.arrange(true,pred,nrow=1)
+```
+
+- Generate a test data set of size 10000. Plot the predictions.  
+```{R,warning=FALSE,message=FALSE}
+df.test = get_data(10000)
+test = df.test %>% sincos2(variable1="x1", variable2="x2")
+
+pred = predict(ylasso,newx=test %>% select(-x1,-x2,-y) %>% as.matrix(),y=test$y,type='response') %>% as_data_frame()
+pred = pred %>%
+  mutate_if(is.character,as.numeric)  %>%
+  mutate(x1 = test$x1, x2 = test$x2) 
+colnames(pred)[1] <- 'pred'
+
+ggplot(data=pred, aes(x=x1,y=x2,color=pred)) + 
+  geom_point() + 
+  coord_cartesian(xlim=c(-3,3), ylim=c(-3,3)) + scale_color_gradient2()
+```
+
+## Conclusion  
+Sometimes, when we want to model quardratics(polynomials), periodic signals and arbitrary low dimensional functions,
+we could do this with linear models using basis functions. The above example demonstrates that we could apply Fourier function to transform original data into new space. We then could use the transformed data to build a regularized model to predict value in both 1d and 2d dimensions.
