@@ -12,7 +12,7 @@ Topic:
 * dimensionality reduction
 * prediction versus attribution
 * algorithmic evaluation
-* bias-variance tradeoffs
+* Linear Models Regularization Using Basis Function
 
 
 
