@@ -1,0 +1,486 @@
+Neural networks for billing code prediction  
+======   
+DRG stands for diagnosis related group. It is a payment multiplier of a standard rate the hospital receives for the care of a patient. It is based on the principal encounter diagnoses (an ICD 9 code) and the absence or presence of (major) complication or comorbidity (MCC/CC). Often times, codes are ensured to be specific so an encounter can be assigned a higher cost weight.  
+
+we will predict the DRG cost weight based on information occurring during the encounter. To do this, we will use neural networks for regression. After that,
+we will focus on ICD code prediction from the other events recorded during the encounter.  
+
+### Part1. Data Preprocessing  
+
+Treat each hadm_id (hosipitalization) as an example:    
+
+1. Construct a table with counts of each DRG.  
+Display the 10 DRGs with the highest cost weights. Display the 10 DRGs with the highest number of occurrences.  
+```{r,warning=FALSE,message=FALSE}
+library(tidyverse)
+library(data.table)
+library(keras)
+library(pROC)
+
+drg <- read_csv('drgevents.csv')
+codeitem <- read_csv('d_codeditems.csv')
+icd9 <- read_csv('icd9.csv')
+medevent <- read_csv('medevents.csv')
+meditem <- read_csv('d_meditems.csv')
+icustay <- read_csv('icustay_detail.csv')
+procedure <- read_csv('procedureevents.csv')
+labitems <- read_csv('d_labitems.csv')
+labevents <- fread('labevents.csv') %>% as_tibble()
+
+# Construct a table with counts of each DRG
+drg_tbl <- drg %>% group_by(itemid) %>% 
+  summarise(weight = mean(cost_weight),count = n()) %>% 
+  left_join(codeitem,by='itemid') %>%
+  select(itemid,description,code,count,weight) %>%
+  rename(drg_count = count) 
+
+# Display the 10 DRGs with the highest cost weights
+drg_tbl %>%
+  top_n(10,wt=weight) %>%
+  arrange(-weight)
+# Display the 10 DRGs with the highest number of occurrences
+drg_tbl %>%
+  top_n(10,wt=drg_count) %>%
+  arrange(-drg_count)
+```
+
+2. Use the diagnosis table with ICD 9 codes to create counts of diagnosis codes for every hadm_id. Display the 10 diagnoses with the highest number of occurrences.  
+```{R,warning=FALSE,message=FALSE}
+# some descriptions are in the wrong format, exclude them
+des_cleaned = icd9$description[!str_detect(icd9$description,'\r$')]
+
+icd9_tbl <- icd9 %>%
+  group_by(hadm_id,code) %>%
+  summarise(icd9.count = n()) %>%
+  do(head(.,1)) %>% # memory issue: extract only one row in each group
+  rename(icd9.code = code) 
+icd9_tbl_spread <- icd9_tbl %>% spread(icd9.code,icd9.count,fill=0)
+icd9_tbl_spread$hadm_id <- as.character(icd9_tbl_spread$hadm_id)
+
+# Display the 10 diagnoses with the highest number of occurrences.
+icd9 %>%
+  group_by(code) %>%
+  summarise(n=n()) %>%
+  arrange(-n) %>%
+  top_n(10,wt=n) %>% left_join(icd9 %>% select(code,description) %>% unique(),by='code') %>%
+  filter(description %in% des_cleaned)
+```
+
+3. Use the medications table to create counts of medications administered for every hadm_id. Display the names of the 10 medications with the highest number of occurrences  
+```{R,warning=FALSE,message=FALSE}
+
+med_tbl <- medevent %>% left_join(icustay,by=c('subject_id','icustay_id')) %>%
+  select(subject_id,hadm_id,icustay_id,itemid) %>% unique() %>%
+  group_by(hadm_id,itemid) %>%
+  summarise(med.count = n()) %>%
+  do(head(.,1)) %>%
+  rename(med.id = itemid)
+med_tbl_spread <- med_tbl %>% spread(med.id,med.count,fill=0)
+med_tbl_spread$hadm_id <- as.character(med_tbl_spread$hadm_id)
+
+# For same icustay_id,hadm_id,subject_id, if the same medication was given 2 times at different
+# tiem, that occurrence of the medication will be '1' 
+medevent %>% left_join(icustay %>% select(subject_id,icustay_id,hadm_id),by=c('subject_id','icustay_id')) %>% 
+  select(subject_id,icustay_id,hadm_id,itemid) %>% unique() %>% 
+  group_by(itemid) %>%
+  summarise(n=n()) %>%
+  left_join(meditem,by='itemid') %>% arrange(-n) 
+```
+
+4. Use the procedures table to create counts of procedures for every hadm_id. Display the 10 procedure codes and descriptions with the highest number of occurrences.  
+```{R,warning = FALSE,message=FALSE}
+procedure_tbl <- procedure %>% group_by(hadm_id,itemid) %>%
+  summarise(prcedr.count = n()) %>%
+  arrange(hadm_id,itemid) %>%
+  do(head(.,1)) %>%
+  rename(prcedr.id = itemid)
+procedure_tbl_spread <- procedure_tbl %>% spread(prcedr.id,prcedr.count,fill=0)
+procedure_tbl_spread$hadm_id <- as.character(procedure_tbl_spread$hadm_id)
+
+# Assumption: for the same subject_id,hadm_id, and item_id,
+# if that procedure was given for more than one time, the occurrence of 
+# that procedure is still be one. (cause we want to see the occurrence of the procedure across different patient)
+procedure %>%
+  select(subject_id,hadm_id,itemid) %>%
+  unique() %>%
+  group_by(itemid) %>%
+  summarise(n=n()) %>% 
+  left_join(codeitem,by='itemid') %>%
+  select(itemid,description,n) %>% arrange(-n) %>% top_n(10)
+```
+
+5. Use the lab events table to create counts of lab events for every hadm_id. Display the 10 lab tuples with the highest number of occurrences.  
+```{R,warning=FALSE,message=FALSE}
+lab_tbl <- labevents %>%
+  select(subject_id,hadm_id,itemid) %>%
+  na.omit() %>%
+  group_by(hadm_id,itemid) %>%
+  summarise(lab.count = n()) %>%
+  do(head(.,1)) %>%
+  rename(lab.id = itemid)
+lab_tbl_spread <- lab_tbl %>% spread(lab.id,lab.count,fill=0)
+lab_tbl_spread$hadm_id <- as.character(lab_tbl_spread$hadm_id)
+
+# counts of normal and abnormal events for all lab events
+# treat NA as normal
+labevents_noNA <- labevents %>%
+  replace_na(list(flag = 'normal')) %>%  #replace na with 'normal'
+  mutate(flag = if_else(flag=='delta','normal',flag)) #replace 'delta' with 'normal'
+table(labevents_noNA$flag)
+
+labevents_noNA %>% 
+  group_by(itemid) %>%
+  summarise(n=n()) %>%
+  arrange(-n) %>% left_join(labitems,by='itemid') %>%
+  select(itemid,n,test_name) %>%
+  top_n(10,wt=n)
+
+```
+
+Create a single table from the above tables in wide format    
+```{R,warning=FALSE,message=FALSE}
+# join tables into wide format by hadm_id
+# transform data type of hadm_id in every tables into the same data type
+drg_tbl <- drg %>% select(hadm_id,cost_weight)
+drg_tbl$hadm_id <- as.character(drg_tbl$hadm_id)
+
+# join tables
+df <- drg_tbl %>% left_join(icd9_tbl_spread,by='hadm_id') %>% left_join(med_tbl_spread,by='hadm_id') %>%
+  left_join(procedure_tbl_spread,by='hadm_id') %>% left_join(lab_tbl_spread,by='hadm_id')
+df[is.na(df)] <- 0 # fill NA with 0
+
+# transform the values by the function f(x) = log(1+x)
+# don't have to transform hadm_id and cost_weight 
+collength <- length(colnames(df))
+for (i in 3:collength){
+  df[,i] = log(df[,i]+1)
+}
+```
+
+Because the counts may vary considerably in magnitude, transform the values by the function f(x) = log(1+x). Create a train and test set with a 50%/50% split.   
+```{R,warning=FALSE,message=FALSE}
+# join tables into wide format by hadm_id
+# transform data type of hadm_id in every tables into the same data type
+drg_tbl <- drg %>% select(hadm_id,cost_weight)
+drg_tbl$hadm_id <- as.character(drg_tbl$hadm_id)
+
+# join tables
+df <- drg_tbl %>% left_join(icd9_tbl_spread,by='hadm_id') %>% left_join(med_tbl_spread,by='hadm_id') %>%
+  left_join(procedure_tbl_spread,by='hadm_id') %>% left_join(lab_tbl_spread,by='hadm_id')
+df[is.na(df)] <- 0 # fill NA with 0
+
+# transform the values by the function f(x) = log(1+x)
+# don't have to transform hadm_id and cost_weight 
+collength <- length(colnames(df))
+for (i in 3:collength){
+  df[,i] = log(df[,i]+1)
+}
+
+itrain <- sample(seq(1:nrow(df)),nrow(df)*0.5)
+x.train <- df[itrain,3:length(colnames(df))]  %>% as.matrix()
+y.train <- df[itrain,2] %>% as.matrix()
+x.test <- df[-itrain,3:length(colnames(df))] %>% as.matrix()
+y.test <- df[-itrain,2] %>% as.matrix()
+```
+
+### Part2. Regression for cost weights 
+
+1. Modify the linear regression code to conduct L2 regularization (ridge regression). Instead of searching for the best setting of hyperparameter (which would normally do through CV or a tune set), in this case for simplicity just set it to 0.01.    
+
+loss function: mse (because it's regression task)      
+activation function: linear  
+```{R,warning=FALSE,message=FALSE}
+model = keras_model_sequential() 
+model %>%
+  layer_dense(units = 1,
+              activation = 'linear',
+              input_shape = ncol(x.train)) %>%
+  layer_activity_regularization(l2=0.01)
+summary(model)
+model %>% compile(
+  loss = c('mse'),
+  optimizer = optimizer_nadam(clipnorm = 10), 
+  metrics = c('mse')
+)
+history = 
+  model %>% fit(x.train, y.train,
+                epochs = 40,
+                batch_size = 16, 
+                validation_split = 0.2, shuffle=T,
+                verbose = 0
+)
+err <- model %>% evaluate(x.test,y.test)
+```
+
+2. Train the model. 
+We try different combinations of the number of epochs and the minibatch size when training the model.   
+Result: when epoch = 120, batch = 10, mse is the smallest (6.86)    
+```{r,warning=FALSE,message=FALSE}
+epochs_arr = c(20, 50 , 120)
+batch_size_arr = c(10, 64, 128)
+mse = list()
+
+for(i in seq(1,length(epochs_arr))){
+  for (j in seq(1,length(batch_size_arr))){
+    model = keras_model_sequential() 
+    model %>%
+      layer_dense(units = 1,
+                  activation = 'linear',
+                  input_shape = ncol(x.train)) %>%
+      layer_activity_regularization(l2=0.01)
+    model %>% compile(
+      loss = c('mse'),
+      optimizer = optimizer_nadam(clipnorm = 10), 
+      metrics = c('mse')
+    )
+    history = 
+      model %>% fit(x.train, y.train,
+                    epochs = epochs_arr[i],
+                    batch_size = batch_size_arr[j], 
+                    validation_split = 0.2, shuffle=T,
+                    verbose = 0
+      )
+    mse[paste('epo_',i,'- bat_',j)] = history$metrics$val_mean_squared_error %>% tail(1)
+  }
+}
+
+# When epoch = 120, batch = 10, mse is the smallest
+model = keras_model_sequential() 
+model %>%
+  layer_dense(units = 1,
+              activation = 'linear',
+              input_shape = ncol(x.train)) %>%
+  layer_activity_regularization(l2=0.01)
+summary(model)
+model %>% compile(
+  loss = c('mse'),
+  optimizer = optimizer_nadam(clipnorm = 10), 
+  metrics = c('mse')
+)
+history = 
+  model %>% fit(x.train, y.train,
+                epochs = 120,
+                batch_size = 10, 
+                validation_split = 0.2, shuffle=T ,
+                verbose = 0
+  )
+
+
+# mean square error using eopch=120,batch_size=10 : 6.86
+model %>% evaluate(x.test, y.test)
+result = model %>% predict(x.test) %>% as_tibble() %>% 
+  bind_cols(true = y.test) %>% rename(pred = V1)
+result <- result %>% gather()
+
+# boxplot
+result %>%
+  ggplot() + 
+  geom_boxplot(aes(x=key,y=value,fill=key)) +
+  theme_minimal() +
+  scale_fill_brewer(palette = 'Set3')
+```
+
+3. Create another model with 3 hidden layers of size 32 with the following activation functions: {tanh, leakyrelu, tanh}. Train the model and plot the cost weight predictions against the true cost weights.  
+```{r,warning=FALSE,message=FALSE}
+hidden_size = 32
+model = keras_model_sequential() 
+model %>%
+  layer_dense(units = hidden_size, activation = 'tanh', 
+              input_shape = c(ncol(x.train))) %>%
+  layer_dense(units = hidden_size, activation = 'linear') %>% 
+  layer_activation_leaky_relu(alpha=0.1) %>%
+  layer_dense(units = hidden_size, activation = 'tanh') %>% 
+  layer_dense(units = 1) 
+summary(model)
+model %>% compile(
+  loss = c('mse'),
+  optimizer = optimizer_nadam(lr=1e-04,clipnorm = 10), 
+  metrics = c('mse')
+)
+history = 
+  model %>% fit(x.train, y.train,
+                epochs = 50,
+                batch_size = 10, 
+                validation_split = 0.2, shuffle=T,
+                verbose = 0
+  )
+model %>% evaluate(x.test, y.test)
+result = model %>% predict(x.test) %>% as_tibble() %>% 
+  bind_cols(true = y.test) %>% rename(pred = V1)
+result <- result %>% gather()
+result %>%
+  ggplot() + 
+  geom_boxplot(aes(x=key,y=value,fill=key)) +
+  theme_minimal() +
+  scale_fill_brewer(palette = 'Set3')
+```
+
+### Part 3: Multilabel classification of ICD codes  
+In practice, health care professionals work with billing coders to optimize the selection of diagnosis (ICD 9) codes to maximize payments received for the case provided. So while the above analysis gives a sense of our ability to predict cost weights (and thus reimbursement), we also want to select the appropriate corresponding diagnosis codes. We term this a multilabel classification problem because we want a vector binary outputs, one for each ICD 9 code.  
+
+1. Create a table from: medications, procedures, and lab events) for X matrix. For Y matrix, select the 100 most common ICD codes. Create a 50/50 train/test split. Report the 100 ICD codes and their descriptions.
+```{r,warning=FALSE,message=FALSE}
+# medication table
+med_tbl <- medevent %>% left_join(icustay,by=c('subject_id','icustay_id')) %>%
+  select(hadm_id,itemid) %>% 
+  group_by(hadm_id,itemid) %>%
+  summarise(med.count = n()) %>%
+  rename(med.id = itemid)
+med_tbl_spread <- med_tbl %>% spread(med.id,med.count,fill=0)
+med_tbl_spread$hadm_id <- as.character(med_tbl_spread$hadm_id)
+
+# procedure table
+procedure_tbl <- procedure %>% group_by(hadm_id,itemid) %>%
+  summarise(prcedr.count = n()) %>%
+  arrange(hadm_id,itemid) %>%
+  rename(prcedr.id = itemid)
+procedure_tbl_spread <- procedure_tbl %>% spread(prcedr.id,prcedr.count,fill=0)
+procedure_tbl_spread$hadm_id <- as.character(procedure_tbl_spread$hadm_id)
+
+# lab table
+lab_tbl <- labevents %>%
+  select(hadm_id,itemid) %>%
+  na.omit() %>%
+  group_by(hadm_id,itemid) %>%
+  summarise(lab.count = n()) %>%
+  rename(lab.id = itemid)
+lab_tbl_spread <- lab_tbl %>% spread(lab.id,lab.count,fill=0)
+lab_tbl_spread$hadm_id <- as.character(lab_tbl_spread$hadm_id)
+
+# display top 100 icd9 code
+icd9_100 <- icd9 %>%
+  group_by(code) %>%
+  summarise(code.count = n()) %>%
+  top_n(100,wt=code.count) 
+
+# For code with same description, keep the first one 
+code.desc <- icd9 %>% select(code,description) %>% unique() %>%
+  group_by(code) %>% 
+  do(head(.,1)) %>% arrange(code) 
+# join table with counts and table with description
+icd9_100 %>% left_join(code.desc,by='code') %>%
+  select(code,code.count,description) %>% arrange(-code.count)
+
+# icd9 table (y matrix)
+icd9_tbl <- icd9 %>%
+  filter(code %in% icd9_100$code) %>%
+  group_by(hadm_id,code) %>%
+  summarise(code.count = n()) 
+
+# binary output
+icd9_tbl <- icd9_tbl %>%
+  mutate(code.count = ifelse(code.count >=2, 1,code.count))
+icd9_tbl_spread <- icd9_tbl %>% spread(code,code.count)
+icd9_tbl_spread[is.na(icd9_tbl_spread)] <- 0
+
+# join tables for x matrix
+uniqueid <- icd9_tbl$hadm_id %>% unique() %>% as_data_frame() %>% rename(hadm_id = value)
+uniqueid$hadm_id <- as.character(uniqueid$hadm_id)
+df <- uniqueid %>% left_join(med_tbl_spread,by='hadm_id') %>% 
+  left_join(procedure_tbl_spread,by='hadm_id') %>%
+  left_join(lab_tbl_spread,by='hadm_id') 
+
+# rescale the data 
+for (i in 2:ncol(df)){
+  df[,i] = log(df[,i]+1)
+}
+df[is.na(df)] <- 0
+
+# create train/test split
+idx <- sample(1:nrow(df),nrow(df)*0.5) 
+xtrain <- df[idx,2:ncol(df)] %>% as.matrix()
+ytrain <- icd9_tbl_spread[idx,2:ncol(icd9_tbl_spread)]%>% as.matrix()
+xtest <- df[-idx,2:ncol(df)]%>% as.matrix()
+ytest <- icd9_tbl_spread[-idx,2:ncol(icd9_tbl_spread)]%>% as.matrix()
+```
+
+2. Create a neural network that has at least two hidden layers.  
+```{r,warning=FALSE,message=FALSE}
+model = keras_model_sequential()
+hidden_size = 30
+model %>%
+  layer_dense(units = hidden_size, activation = 'relu', 
+              input_shape = c(ncol(xtrain))) %>%
+  layer_dense(units = hidden_size, activation = 'relu') %>% 
+  layer_dense(units = hidden_size, activation = 'relu') %>%
+  layer_dense(units = 2, activation = 'sigmoid')
+print(summary(model))
+```
+
+3. Train the model.     
+loss = binary_crossentropy      
+final activation = softmax      
+```{r,warning=FALSE,message=FALSE}
+accu = list()
+auc = list()
+
+for(i in 1:100){
+  model = keras_model_sequential()
+  hidden_size = 30
+  model %>%
+    layer_dense(units = hidden_size, activation = 'relu', 
+                input_shape = c(ncol(xtrain))) %>%
+    layer_dense(units = hidden_size, activation = 'relu') %>% 
+    layer_dense(units = hidden_size, activation = 'relu') %>%
+    layer_dense(units = 2, activation = 'softmax')
+  
+  model %>% compile(
+    loss = c('binary_crossentropy'),
+    optimizer = 'rmsprop',
+    metrics = c('accuracy')
+  )
+  history = 
+    model %>% fit(xtrain, to_categorical(ytrain[,i],2),
+                  epochs = 20,
+                  batch_size = 10, 
+                  validation_split = 0.2, shuffle=T,
+                  verbose = 0
+    )
+  # compute the roc
+  t = model %>%
+    evaluate(xtest, to_categorical(ytest[,i],2))
+  accu[paste('acc_',i)] = t$acc
+  
+  # compute the auc
+  pred = model %>% predict(xtest)
+  truth = ytest[,i]
+  r <- roc(truth,pred[,1])
+  auc[paste('auc_',i)] <- auc(r)
+}
+```
+4. On the test set, compute the AUC for each ICD code. Plot a histogram of AUCs of the top 100 ICD9 codes.  
+average accuracy: 93%       
+average auc: 0.636       
+
+predicted best label:     
+995.92:SYSTEMIC INFLAMMATORY RESPONSE SYNDROME DUE TO INF   
+785.52:SEPTIC SHOCK    
+431:INTRACEREBRAL HEMORRHAGE   
+
+predicted worst label:     
+998.59: OTHER POSTOPERATIVE INFECTION    
+255.4: CORTICOADRENAL INSUFFICIENCY    
+998.12: HEMATOMA COMPLICATING A PROCEDURE    
+```{R,warning=FALSE,message=FALSE}
+auc_df <- auc %>% as.data.frame() %>% t() %>% as_tibble() %>% rownames_to_column()
+icd9100 <- colnames(icd9_tbl_spread)[2:ncol(icd9_tbl_spread)] %>% as_tibble()
+result <- cbind(icd9100,auc_df)
+result$rowname <- NULL
+colnames(result) <- c('icd9.code','auc')
+result %>%
+  ggplot(aes(x=reorder(icd9.code,-auc),y=auc)) +
+  geom_histogram(stat='identity') +
+  coord_flip() +
+  labs(x = 'icd9.code')
+
+# look up the description
+codelookup <- c(995.92,785.52,431, 998.59,255.4,998.12 )
+i = icd9 %>% 
+  filter(code %in% codelookup) %>%
+  select(code,description) %>%
+  arrange(code) %>% unique()
+
+accu = accu %>% unlist() %>% mean()
+auc = auc %>% unlist() %>% mean()
+
+```  
